@@ -3,7 +3,7 @@
 笨方法学习Python Web开发
 
 ## 第一章
-- 缘起
+- 缘起
 - http协议
 - cgi
 - wsgi
