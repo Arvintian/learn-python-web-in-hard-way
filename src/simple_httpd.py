@@ -5,6 +5,7 @@ from multiprocessing.dummy import Pool as ThreadPool
 import io
 import traceback
 import logging
+import os
 
 
 class Server(object):
@@ -25,24 +26,63 @@ class Server(object):
         self._listen_fd = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._listen_fd.bind((self._host, self._port))
         self._listen_fd.listen(self._worker_count)
-        while True:
-            conn, addr = self._listen_fd.accept()
-            self._worker_pool.apply_async(self.accept_request, (conn, addr,))
+        try:
+            while True:
+                conn, addr = self._listen_fd.accept()
+                self._worker_pool.apply_async(self.accept_request, (conn, addr,))
+        except Exception as e:
+            traceback.print_exc()
+        finally:
+            self._listen_fd.close()
 
     def accept_request(self, conn: socket.socket, addr):
         try:
             first_line = self._get_line(conn)
             method, path, http_version = first_line.strip().split()
             if method == "GET":
-                code = self.unimplemented(conn)
-            if method == "POST":
+                code = self.try_file(conn, path)
+            elif method == "POST":
                 code = self.unimplemented(conn)
             else:
                 code = self.unimplemented(conn)
             self._logger.info("{}:{} {} {} {} {}".format(addr[0], addr[1], http_version, method, path, code))
-            conn.close()
         except Exception as e:
             traceback.print_exc()
+        finally:
+            conn.close()
+
+    def try_file(self, conn: socket.socket, path: str):
+        here = os.path.abspath(os.path.dirname(__file__))
+        target = os.path.join(here, "www", path.strip("/"))
+        if not os.path.isfile(target):
+            return self.not_found(conn)
+        with open(target, "rb") as target_file:
+            data = target_file.read()
+            conn.sendall(b"HTTP/1.0 200 OK\r\n")
+            conn.sendall(self.SERVER_STRING)
+            if ".html" in path:
+                conn.sendall(b"Content-Type: text/html\r\n")
+            else:
+                conn.sendall(b"Content-Type: application/octetstream\r\n")
+            conn.sendall(bytes("Content-Length: {}\r\n".format(len(data)), "utf-8"))
+            conn.sendall(b"\r\n")
+            conn.sendall(data)
+            return 200
+
+    def not_found(self, conn: socket.socket):
+        html = "<html>"
+        html += "<head><title>Not Found</title></head>"
+        html += "<body>Not Found</body>"
+        html += "</html>"
+        html = bytes(html, "utf-8")
+        conn.sendall(b"HTTP/1.0 404 Not Found\r\n")
+        conn.sendall(self.SERVER_STRING)
+        conn.sendall(b"Content-Type: text/html\r\n")
+        conn.sendall(b"Content-Encoding: utf-8\r\n")
+        conn.sendall(bytes("Content-Length: {}\r\n".format(len(html)), "utf-8"))
+        conn.sendall(b"\r\n")
+        conn.sendall(html)
+        return 404
 
     def unimplemented(self, conn: socket.socket):
         html = "<html>"
@@ -50,13 +90,13 @@ class Server(object):
         html += "<body>HTTP request method not supported</body>"
         html += "</html>"
         html = bytes(html, "utf-8")
-        conn.send(b"HTTP/1.0 501 Method Not Implemented\r\n")
-        conn.send(self.SERVER_STRING)
-        conn.send(b"Content-Type: text/html\r\n")
-        conn.send(b"Content-Encoding: utf-8\r\n")
-        conn.send(bytes("Content-Length: {}\r\n".format(len(html)), "utf-8"))
-        conn.send(b"\r\n")
-        conn.send(html)
+        conn.sendall(b"HTTP/1.0 501 Method Not Implemented\r\n")
+        conn.sendall(self.SERVER_STRING)
+        conn.sendall(b"Content-Type: text/html\r\n")
+        conn.sendall(b"Content-Encoding: utf-8\r\n")
+        conn.sendall(bytes("Content-Length: {}\r\n".format(len(html)), "utf-8"))
+        conn.sendall(b"\r\n")
+        conn.sendall(html)
         return 501
 
     def _get_line(self, conn: socket.socket, length=1024):
